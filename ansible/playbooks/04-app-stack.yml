@@ -1,0 +1,79 @@
+---
+# =============================================================================
+# 04-app-stack.yml — Deploy Application Container Stack
+# =============================================================================
+# Generates .env configuration files from Terraform outputs and starts the
+# three application containers (products-web, products-agent, products-mcp).
+#
+# PREREQUISITES: Run these before this playbook:
+#   1. ansible-playbook ansible/playbooks/02-vault.yml
+#   2. ansible-playbook ansible/playbooks/03-mongodb.yml
+#   3. cd terraform && terraform apply (completes Vault configuration)
+#
+# Usage:
+#   ansible-playbook ansible/playbooks/04-app-stack.yml \
+#     -e "tenant_id=<id>" \
+#     -e "agent_client_id=<id>" \
+#     ... (see vars below)
+#
+# Or, set all values in a vars file and pass with -e @vars.yml.
+# The deploy.sh script reads these from your .env file automatically.
+# =============================================================================
+
+- name: Deploy application container stack
+  hosts: localhost
+  connection: local
+  gather_facts: true
+
+  vars:
+    # ── Read values from environment variables (set by deploy.sh from .env) ──
+
+    # Microsoft Entra ID
+    tenant_id:           "{{ lookup('env', 'TENANT_ID') }}"
+    web_client_id:       "{{ lookup('env', 'WEB_CLIENT_ID') }}"
+    web_client_secret:   "{{ lookup('env', 'WEB_CLIENT_SECRET') }}"
+    agent_client_id:     "{{ lookup('env', 'AGENT_CLIENT_ID') }}"
+    agent_client_secret: "{{ lookup('env', 'AGENT_CLIENT_SECRET') }}"
+    mcp_client_id:       "{{ lookup('env', 'MCP_CLIENT_ID') }}"
+    web_scopes:          "{{ lookup('env', 'WEB_SCOPES') | default('openid profile email') }}"
+    agent_scopes:        "{{ lookup('env', 'AGENT_SCOPES') | default('') }}"
+    redirect_uri:        "{{ lookup('env', 'REDIRECT_URI') | default('http://localhost:8501/callback') }}"
+
+    # LLM Backend
+    bedrock_inference_profile_arn: "{{ lookup('env', 'BEDROCK_INFERENCE_PROFILE_ARN') | default('') }}"
+    bedrock_region:                "{{ lookup('env', 'BEDROCK_REGION') | default('us-west-2') }}"
+    anthropic_api_key:             "{{ lookup('env', 'ANTHROPIC_API_KEY') | default('') }}"
+
+    # Vault namespace — populated from Terraform outputs by deploy.sh
+    vault_namespace: "{{ lookup('env', 'VAULT_NAMESPACE') }}"
+
+  pre_tasks:
+    - name: Validate required variables are set
+      ansible.builtin.assert:
+        that:
+          - tenant_id != ""
+          - web_client_id != ""
+          - web_client_secret != ""
+          - agent_client_id != ""
+          - agent_client_secret != ""
+          - mcp_client_id != ""
+          - vault_namespace != ""
+        fail_msg: |
+          Required environment variables are not set.
+          Please ensure you have:
+            1. Copied .env.example to nerdctl-compose/.env and filled in all values
+            2. Run: source nerdctl-compose/.env (or let deploy.sh handle it)
+            3. Run: export VAULT_NAMESPACE=$(cd terraform && terraform output -raw vault_namespace)
+
+    - name: Validate LLM backend configuration
+      ansible.builtin.assert:
+        that:
+          - bedrock_inference_profile_arn != "" or anthropic_api_key != ""
+        fail_msg: |
+          No LLM backend configured. Set either:
+            BEDROCK_INFERENCE_PROFILE_ARN (for AWS Bedrock)
+          or:
+            ANTHROPIC_API_KEY (for Anthropic API directly)
+
+  roles:
+    - role: app-stack

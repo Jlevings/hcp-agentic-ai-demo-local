@@ -1,0 +1,144 @@
+---
+# =============================================================================
+# roles/app-stack/tasks/main.yml — Application Container Stack
+# =============================================================================
+# This role deploys the three pre-built application containers that make up
+# the Vault Agentic IAM demo:
+#
+#   products-web   (port 8501) — Streamlit UI with Entra ID login
+#   products-agent (port 8001) — Agent API with OBO token exchange + Bedrock
+#   products-mcp   (port 8000) — MCP server that calls Vault for DB creds
+#
+# Each service needs a .env file with its specific configuration. This role
+# generates those .env files from the values in the vars/ directory (which
+# you populate from your terraform.tfvars / Terraform outputs).
+#
+# Prerequisites:
+#   - Vault is running (02-vault.yml completed)
+#   - MongoDB is running (03-mongodb.yml completed)
+#   - Terraform has been applied (terraform apply completed)
+#   - Role vars are set (see playbooks/04-app-stack.yml vars section)
+# =============================================================================
+
+- name: Ensure compose directories exist
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    mode: "0755"
+  loop:
+    - "{{ compose_dir }}/products-agent"
+    - "{{ compose_dir }}/products-mcp"
+    - "{{ compose_dir }}/products-web"
+  vars:
+    compose_dir: "{{ playbook_dir }}/../../nerdctl-compose"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Generate .env files for each service
+# ─────────────────────────────────────────────────────────────────────────────
+# Each .env file is generated from variables — no secrets are embedded in
+# the compose files themselves (which may be committed to version control).
+
+- name: Generate products-agent .env file
+  ansible.builtin.template:
+    src: products-agent.env.j2
+    dest: "{{ playbook_dir }}/../../nerdctl-compose/products-agent/.env"
+    mode: "0600"
+  # This file contains Entra ID client secrets and AWS keys — restrict access.
+
+- name: Generate products-mcp .env file
+  ansible.builtin.template:
+    src: products-mcp.env.j2
+    dest: "{{ playbook_dir }}/../../nerdctl-compose/products-mcp/.env"
+    mode: "0600"
+
+- name: Generate products-web .env file
+  ansible.builtin.template:
+    src: products-web.env.j2
+    dest: "{{ playbook_dir }}/../../nerdctl-compose/products-web/.env"
+    mode: "0600"
+
+- name: Generate root .env file (tag and platform)
+  ansible.builtin.copy:
+    dest: "{{ playbook_dir }}/../../nerdctl-compose/.env"
+    content: |
+      # Container image tag — use 'latest' or pin to a specific version
+      tag=latest
+      # Platform target — set to linux/arm64 if on Apple Silicon (M1/M2/M3)
+      platform=linux/amd64
+    mode: "0644"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Pull images before starting (better UX — shows pull progress separately)
+# ─────────────────────────────────────────────────────────────────────────────
+
+- name: Pull application container images
+  ansible.builtin.command: >
+    nerdctl compose
+    -f {{ playbook_dir }}/../../nerdctl-compose/docker-compose.yml
+    --project-name confused-demo
+    pull
+  changed_when: true
+  # Pulling separately ensures we have the latest images before starting.
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Start the application stack
+# ─────────────────────────────────────────────────────────────────────────────
+
+- name: Start application container stack
+  ansible.builtin.command: >
+    nerdctl compose
+    -f {{ playbook_dir }}/../../nerdctl-compose/docker-compose.yml
+    --project-name confused-demo
+    up -d
+  changed_when: true
+  # -d runs containers in detached (background) mode.
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Health checks
+# ─────────────────────────────────────────────────────────────────────────────
+
+- name: Wait for products-mcp to be healthy
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:8000"
+    status_code: [200, 404, 422]  # Any HTTP response means the service is up
+  register: mcp_health
+  until: mcp_health.status in [200, 404, 422]
+  retries: 20
+  delay: 3
+  failed_when: false
+
+- name: Wait for products-agent to be healthy
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:8001"
+    status_code: [200, 404, 422]
+  register: agent_health
+  until: agent_health.status in [200, 404, 422]
+  retries: 20
+  delay: 3
+  failed_when: false
+
+- name: Wait for products-web to be healthy
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:8501"
+    status_code: [200, 302]
+  register: web_health
+  until: web_health.status in [200, 302]
+  retries: 20
+  delay: 3
+  failed_when: false
+
+- name: Application stack status
+  ansible.builtin.debug:
+    msg: |
+      ============================================================
+      Application stack is running!
+
+        products-web:   http://localhost:8501  ({{ 'UP' if web_health.status in [200,302] else 'CHECK LOGS' }})
+        products-agent: http://localhost:8001  ({{ 'UP' if agent_health.status in [200,404,422] else 'CHECK LOGS' }})
+        products-mcp:   http://localhost:8000  ({{ 'UP' if mcp_health.status in [200,404,422] else 'CHECK LOGS' }})
+
+      Open the demo: http://localhost:8501
+      Sign in as Alice (read-only) or Bob (read-write).
+
+      View logs: nerdctl compose -f nerdctl-compose/docker-compose.yml logs -f
+      ============================================================

@@ -1,0 +1,294 @@
+---
+# =============================================================================
+# roles/vault/tasks/main.yml — Vault Enterprise Container Setup
+# =============================================================================
+# This role:
+#   1. Creates the Vault data directory and config file
+#   2. Copies the Vault Enterprise license
+#   3. Pulls and starts the Vault Enterprise container via nerdctl
+#   4. Initializes Vault (generates unseal keys and root token)
+#   5. Unseals Vault using 3 of the 5 generated key shares
+#   6. Applies the Enterprise license
+#
+# State files written (chmod 600):
+#   ~/.demo/vault/init.json        — full init output (keys + root token)
+#   ~/.demo/vault/.vault-token     — root token only (used by Terraform)
+#   ~/.demo/vault/config/vault.hcl — Vault server configuration
+#
+# This role is idempotent: if Vault is already initialized and running,
+# it skips init and unseal steps.
+# =============================================================================
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Directory and Config Setup
+# ─────────────────────────────────────────────────────────────────────────────
+
+- name: Create Vault demo directories
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    mode: "0700"
+  loop:
+    - "{{ ansible_env.HOME }}/.demo/vault/data"     # Vault file storage backend
+    - "{{ ansible_env.HOME }}/.demo/vault/config"   # Vault configuration files
+    - "{{ ansible_env.HOME }}/.demo/vault/logs"     # Vault audit logs (optional)
+
+- name: Write Vault server configuration
+  ansible.builtin.copy:
+    dest: "{{ ansible_env.HOME }}/.demo/vault/config/vault.hcl"
+    mode: "0600"
+    content: |
+      # Vault Enterprise configuration for local demo
+      # Storage backend: file (simple, no additional dependencies)
+      # For production use, replace with Integrated Storage (Raft) or Consul.
+      storage "file" {
+        path = "/vault/data"
+      }
+
+      # TCP listener — no TLS for local dev (HTTP only).
+      # The 0.0.0.0 bind allows containers on the same network to reach Vault
+      # at http://host.docker.internal:8200.
+      listener "tcp" {
+        address     = "0.0.0.0:8200"
+        tls_disable = true
+      }
+
+      # Vault API address — used by Vault itself for cluster coordination.
+      api_addr = "http://0.0.0.0:8200"
+
+      # Enable the Vault UI (accessible at http://localhost:8200/ui).
+      ui = true
+
+      # Disable mlock for container environments (containers can't lock memory).
+      disable_mlock = true
+
+- name: Copy Vault Enterprise license to config directory
+  ansible.builtin.copy:
+    src: "{{ playbook_dir }}/../../vault.hclic"
+    dest: "{{ ansible_env.HOME }}/.demo/vault/config/vault.hclic"
+    mode: "0600"
+  # The license file is required to start Vault Enterprise. Without it,
+  # Vault Enterprise will start but enter a grace period and eventually seal.
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Container Management
+# ─────────────────────────────────────────────────────────────────────────────
+
+- name: Pull Vault Enterprise image
+  ansible.builtin.command: >
+    nerdctl pull hashicorp/vault-enterprise:latest
+  changed_when: true
+  # Always pull to ensure latest patch version. For reproducible demos,
+  # pin to a specific version tag (e.g., hashicorp/vault-enterprise:1.17.x).
+
+- name: Check if Vault container is already running
+  ansible.builtin.command: nerdctl inspect vault-enterprise
+  register: vault_container_check
+  changed_when: false
+  failed_when: false
+
+- name: Remove existing Vault container if stopped
+  ansible.builtin.command: nerdctl rm vault-enterprise
+  when:
+    - vault_container_check.rc == 0
+    - "'\"Status\": \"exited\"' in vault_container_check.stdout or 'exited' in vault_container_check.stdout"
+  failed_when: false
+  changed_when: true
+
+- name: Start Vault Enterprise container
+  ansible.builtin.command: >
+    nerdctl run -d
+    --name vault-enterprise
+    --restart unless-stopped
+    -p 8200:8200
+    -e VAULT_DEV_ROOT_TOKEN_ID=
+    -e VAULT_LICENSE_PATH=/vault/config/vault.hclic
+    -v {{ ansible_env.HOME }}/.demo/vault/data:/vault/data
+    -v {{ ansible_env.HOME }}/.demo/vault/config:/vault/config
+    --cap-add IPC_LOCK
+    hashicorp/vault-enterprise:latest
+    vault server -config=/vault/config/vault.hcl
+  when: vault_container_check.rc != 0
+  changed_when: true
+  # IPC_LOCK capability is required for Vault to lock memory pages (mlock).
+  # We disable mlock in config above, but the capability is a best practice.
+
+- name: Wait for Vault to be ready
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:8200/v1/sys/health"
+    status_code: [200, 429, 472, 473, 501, 503]
+    # 200 = initialized, unsealed, active
+    # 501 = not initialized (expected on first run)
+    # 503 = sealed (expected before unseal)
+  register: vault_health
+  until: vault_health.status in [200, 429, 472, 473, 501, 503]
+  retries: 30
+  delay: 2
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Initialization
+# ─────────────────────────────────────────────────────────────────────────────
+
+- name: Check if Vault is already initialized
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:8200/v1/sys/init"
+    method: GET
+    return_content: true
+  register: vault_init_status
+
+- name: Initialize Vault (first time only)
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:8200/v1/sys/init"
+    method: POST
+    body_format: json
+    body:
+      secret_shares: 5       # Generate 5 unseal key shares
+      secret_threshold: 3    # Require 3 of 5 shares to unseal
+    return_content: true
+    status_code: 200
+  register: vault_init_result
+  when: not (vault_init_status.json.initialized | bool)
+
+- name: Save Vault init output to file (secure)
+  ansible.builtin.copy:
+    dest: "{{ ansible_env.HOME }}/.demo/vault/init.json"
+    content: "{{ vault_init_result.json | to_nice_json }}"
+    mode: "0600"  # Owner read/write only — contains unseal keys and root token
+  when: vault_init_result is not skipped
+
+- name: Save root token to .vault-token file
+  ansible.builtin.copy:
+    dest: "{{ ansible_env.HOME }}/.demo/vault/.vault-token"
+    content: "{{ vault_init_result.json.root_token }}"
+    mode: "0600"
+  when: vault_init_result is not skipped
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Unseal
+# ─────────────────────────────────────────────────────────────────────────────
+
+- name: Check if Vault is already unsealed
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:8200/v1/sys/seal-status"
+    method: GET
+    return_content: true
+  register: vault_seal_status
+
+- name: Load init data if Vault was previously initialized
+  ansible.builtin.slurp:
+    src: "{{ ansible_env.HOME }}/.demo/vault/init.json"
+  register: vault_init_file
+  when:
+    - vault_seal_status.json.sealed | bool
+    - vault_init_result is skipped
+
+- name: Set unseal keys from file (when already initialized)
+  ansible.builtin.set_fact:
+    unseal_keys: "{{ (vault_init_file.content | b64decode | from_json).keys_base64 }}"
+  when:
+    - vault_seal_status.json.sealed | bool
+    - vault_init_result is skipped
+
+- name: Set unseal keys from init result (when just initialized)
+  ansible.builtin.set_fact:
+    unseal_keys: "{{ vault_init_result.json.keys_base64 }}"
+  when:
+    - vault_seal_status.json.sealed | bool
+    - vault_init_result is not skipped
+
+- name: Unseal Vault with key share 1 of 3
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:8200/v1/sys/unseal"
+    method: POST
+    body_format: json
+    body:
+      key: "{{ unseal_keys[0] }}"
+    status_code: 200
+  when: vault_seal_status.json.sealed | bool
+
+- name: Unseal Vault with key share 2 of 3
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:8200/v1/sys/unseal"
+    method: POST
+    body_format: json
+    body:
+      key: "{{ unseal_keys[1] }}"
+    status_code: 200
+  when: vault_seal_status.json.sealed | bool
+
+- name: Unseal Vault with key share 3 of 3
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:8200/v1/sys/unseal"
+    method: POST
+    body_format: json
+    body:
+      key: "{{ unseal_keys[2] }}"
+    status_code: 200
+  when: vault_seal_status.json.sealed | bool
+
+- name: Verify Vault is unsealed
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:8200/v1/sys/seal-status"
+    return_content: true
+  register: vault_final_status
+
+- name: Assert Vault is unsealed and active
+  ansible.builtin.assert:
+    that:
+      - not (vault_final_status.json.sealed | bool)
+    fail_msg: "Vault is still sealed after unseal attempts. Check logs: nerdctl logs vault-enterprise"
+    success_msg: "Vault is unsealed and ready."
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Enterprise License
+# ─────────────────────────────────────────────────────────────────────────────
+
+- name: Load root token
+  ansible.builtin.slurp:
+    src: "{{ ansible_env.HOME }}/.demo/vault/.vault-token"
+  register: vault_root_token_file
+
+- name: Set root token fact
+  ansible.builtin.set_fact:
+    vault_root_token: "{{ vault_root_token_file.content | b64decode | trim }}"
+
+- name: Apply Vault Enterprise license
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:8200/v1/sys/license"
+    method: PUT
+    headers:
+      X-Vault-Token: "{{ vault_root_token }}"
+    body_format: json
+    body:
+      text: "{{ lookup('file', playbook_dir + '/../../vault.hclic') }}"
+    status_code: [200, 204]
+  register: license_result
+  failed_when: false
+  # Some Vault versions auto-load the license from the config path.
+  # We attempt to apply it via API as well to ensure it's active.
+
+- name: Create admin namespace (required for Vault Enterprise)
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:8200/v1/sys/namespaces/admin"
+    method: POST
+    headers:
+      X-Vault-Token: "{{ vault_root_token }}"
+    body_format: json
+    body: {}
+    status_code: [200, 400]  # 400 = already exists, which is fine
+  register: admin_ns_result
+  failed_when:
+    - admin_ns_result.status not in [200, 400]
+
+- name: Summary
+  ansible.builtin.debug:
+    msg: |
+      ============================================================
+      Vault Enterprise is running and unsealed.
+        UI:         http://localhost:8200/ui
+        Root token: {{ vault_root_token }}
+        Init data:  ~/.demo/vault/init.json (keep this safe!)
+
+      Next step:
+        ansible-playbook ansible/playbooks/03-mongodb.yml
+      ============================================================

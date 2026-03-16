@@ -1,0 +1,27 @@
+---
+# =============================================================================
+# 03-mongodb.yml — Start MongoDB and Seed Demo Data
+# =============================================================================
+# Orchestrates the mongodb role to start a local MongoDB container,
+# create the admin user, and seed the products collection with demo data.
+#
+# Usage:
+#   ansible-playbook ansible/playbooks/03-mongodb.yml
+#
+# After this playbook completes:
+#   - MongoDB is running at localhost:27017 with authentication enabled
+#   - Admin credentials are saved at ~/.demo/mongodb/password
+#   - The test.products collection is seeded with 8 sample products
+#
+# Required before running Terraform:
+#   The mongo_password output from this playbook must be added to
+#   terraform/terraform.tfvars before running terraform apply.
+# =============================================================================
+
+- name: Start MongoDB and seed demo data
+  hosts: localhost
+  connection: local
+  gather_facts: true
+
+  roles:
+    - role: mongodb

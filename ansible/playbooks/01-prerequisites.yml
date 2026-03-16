@@ -1,0 +1,247 @@
+---
+# =============================================================================
+# 01-prerequisites.yml — Prerequisites Check & Installation
+# =============================================================================
+# This playbook verifies and installs all tools required to run the demo.
+# It is designed to be idempotent — safe to run multiple times.
+#
+# Tools checked/installed:
+#   - Homebrew (must be pre-installed — the foundation for all other installs)
+#   - Rancher Desktop (provides nerdctl container runtime)
+#   - nerdctl (container CLI, comes with Rancher Desktop)
+#   - nerdctl-compose (Docker Compose-compatible CLI for nerdctl)
+#   - Terraform >= 1.5
+#   - Ansible (for subsequent playbooks)
+#   - Vault CLI (for smoke tests and manual interaction)
+#   - AWS CLI (needed if using AWS Bedrock as LLM backend)
+#   - jq (JSON processor, used by scripts)
+#
+# Usage:
+#   ansible-playbook ansible/playbooks/01-prerequisites.yml
+#
+# Dry run (check only, no changes):
+#   ansible-playbook ansible/playbooks/01-prerequisites.yml --check
+# =============================================================================
+
+- name: Check and install demo prerequisites
+  hosts: localhost
+  connection: local
+  gather_facts: true
+
+  vars:
+    # Minimum required Terraform version
+    terraform_min_version: "1.5.0"
+    # Minimum required Vault CLI version
+    vault_min_version: "1.15.0"
+
+  tasks:
+
+    # ──────────────────────────────────────────────────────────────────────────
+    # Platform check — this demo is designed for macOS (darwin).
+    # ──────────────────────────────────────────────────────────────────────────
+
+    - name: Assert running on macOS
+      ansible.builtin.assert:
+        that:
+          - ansible_os_family == "Darwin"
+        fail_msg: |
+          This demo is designed for macOS. Detected OS: {{ ansible_os_family }}.
+          For Linux support, replace Rancher Desktop with nerdctl standalone
+          and adjust the container runtime paths accordingly.
+        success_msg: "macOS detected — continuing."
+
+    # ──────────────────────────────────────────────────────────────────────────
+    # Homebrew — required foundation for all package installs.
+    # ──────────────────────────────────────────────────────────────────────────
+
+    - name: Check Homebrew is installed
+      ansible.builtin.command: which brew
+      register: brew_check
+      changed_when: false
+      failed_when: false
+
+    - name: Fail if Homebrew is not installed
+      ansible.builtin.fail:
+        msg: |
+          Homebrew is not installed. Install it first:
+            /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+          Then re-run this playbook.
+      when: brew_check.rc != 0
+
+    - name: Homebrew found
+      ansible.builtin.debug:
+        msg: "Homebrew is installed at: {{ brew_check.stdout }}"
+
+    # ──────────────────────────────────────────────────────────────────────────
+    # Rancher Desktop — provides nerdctl and container runtime.
+    # ──────────────────────────────────────────────────────────────────────────
+
+    - name: Check if Rancher Desktop is installed
+      ansible.builtin.stat:
+        path: /Applications/Rancher Desktop.app
+      register: rancher_desktop_stat
+
+    - name: Install Rancher Desktop via Homebrew Cask
+      community.general.homebrew_cask:
+        name: rancher
+        state: present
+      when: not rancher_desktop_stat.stat.exists
+      register: rancher_install
+
+    - name: Rancher Desktop already installed
+      ansible.builtin.debug:
+        msg: "Rancher Desktop is already installed."
+      when: rancher_desktop_stat.stat.exists
+
+    - name: Remind user to start Rancher Desktop if just installed
+      ansible.builtin.debug:
+        msg: |
+          Rancher Desktop was just installed. Please:
+            1. Open Rancher Desktop from your Applications folder
+            2. Wait for it to initialize (first launch takes 2-3 minutes)
+            3. In Preferences > Container Engine, select 'containerd'
+            4. Re-run this playbook to continue
+      when: rancher_install is defined and rancher_install.changed
+
+    - name: Pause if Rancher Desktop was just installed
+      ansible.builtin.fail:
+        msg: "Please start Rancher Desktop and re-run this playbook."
+      when: rancher_install is defined and rancher_install.changed
+
+    # ──────────────────────────────────────────────────────────────────────────
+    # nerdctl — container CLI provided by Rancher Desktop.
+    # ──────────────────────────────────────────────────────────────────────────
+
+    - name: Check nerdctl is available
+      ansible.builtin.command: nerdctl version
+      register: nerdctl_check
+      changed_when: false
+      failed_when: false
+
+    - name: Fail if nerdctl is not available
+      ansible.builtin.fail:
+        msg: |
+          nerdctl is not found in PATH.
+          Rancher Desktop installs nerdctl to ~/.rd/bin — ensure it is in your PATH:
+            echo 'export PATH="$HOME/.rd/bin:$PATH"' >> ~/.zshrc
+            source ~/.zshrc
+          Then re-run this playbook.
+      when: nerdctl_check.rc != 0
+
+    - name: nerdctl version
+      ansible.builtin.debug:
+        msg: "nerdctl is available: {{ nerdctl_check.stdout_lines[0] }}"
+
+    # ──────────────────────────────────────────────────────────────────────────
+    # Terraform — infrastructure configuration tool.
+    # ──────────────────────────────────────────────────────────────────────────
+
+    - name: Check Terraform is installed
+      ansible.builtin.command: terraform version -json
+      register: terraform_check
+      changed_when: false
+      failed_when: false
+
+    - name: Install Terraform via Homebrew
+      community.general.homebrew:
+        name: terraform
+        state: present
+      when: terraform_check.rc != 0
+
+    - name: Get Terraform version after install
+      ansible.builtin.command: terraform version -json
+      register: terraform_version_check
+      changed_when: false
+      when: terraform_check.rc != 0
+
+    - name: Parse Terraform version
+      ansible.builtin.set_fact:
+        terraform_version: >-
+          {{ (terraform_check.stdout | from_json).terraform_version
+             if terraform_check.rc == 0
+             else (terraform_version_check.stdout | from_json).terraform_version }}
+
+    - name: Assert Terraform version meets minimum
+      ansible.builtin.assert:
+        that:
+          - terraform_version is version(terraform_min_version, '>=')
+        fail_msg: "Terraform {{ terraform_version }} found, but >= {{ terraform_min_version }} is required. Run: brew upgrade terraform"
+        success_msg: "Terraform {{ terraform_version }} — OK"
+
+    # ──────────────────────────────────────────────────────────────────────────
+    # Vault CLI — for smoke tests and manual Vault interaction.
+    # ──────────────────────────────────────────────────────────────────────────
+
+    - name: Check Vault CLI is installed
+      ansible.builtin.command: vault version
+      register: vault_check
+      changed_when: false
+      failed_when: false
+
+    - name: Install Vault CLI via Homebrew
+      community.general.homebrew:
+        name: vault
+        state: present
+      when: vault_check.rc != 0
+
+    - name: Vault CLI version
+      ansible.builtin.command: vault version
+      register: vault_version_out
+      changed_when: false
+
+    - name: Show Vault CLI version
+      ansible.builtin.debug:
+        msg: "{{ vault_version_out.stdout }}"
+
+    # ──────────────────────────────────────────────────────────────────────────
+    # AWS CLI — required for AWS Bedrock LLM backend.
+    # ──────────────────────────────────────────────────────────────────────────
+
+    - name: Check AWS CLI is installed
+      ansible.builtin.command: aws --version
+      register: aws_check
+      changed_when: false
+      failed_when: false
+
+    - name: Install AWS CLI via Homebrew
+      community.general.homebrew:
+        name: awscli
+        state: present
+      when: aws_check.rc != 0
+
+    - name: AWS CLI version
+      ansible.builtin.command: aws --version
+      register: aws_version_out
+      changed_when: false
+
+    - name: Show AWS CLI version
+      ansible.builtin.debug:
+        msg: "{{ aws_version_out.stdout }}"
+
+    # ──────────────────────────────────────────────────────────────────────────
+    # jq — JSON processor used by scripts.
+    # ──────────────────────────────────────────────────────────────────────────
+
+    - name: Check jq is installed
+      ansible.builtin.command: jq --version
+      register: jq_check
+      changed_when: false
+      failed_when: false
+
+    - name: Install jq via Homebrew
+      community.general.homebrew:
+        name: jq
+        state: present
+      when: jq_check.rc != 0
+
+    # ──────────────────────────────────────────────────────────────────────────
+    # Summary
+    # ──────────────────────────────────────────────────────────────────────────
+
+    - name: Prerequisites summary
+      ansible.builtin.debug:
+        msg: |
+          ============================================================
+          All prerequisites are satisfied. Next step:
+            ansible-playbook ansible/playbooks/02-vault.yml
+          ============================================================

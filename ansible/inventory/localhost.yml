@@ -1,0 +1,14 @@
+---
+# =============================================================================
+# inventory/localhost.yml — Ansible Inventory
+# =============================================================================
+# All playbooks in this project target the local machine (localhost).
+# No remote SSH connections are required — Ansible uses the "local"
+# connection type to run tasks directly on the machine running the playbook.
+# =============================================================================
+
+all:
+  hosts:
+    localhost:
+      ansible_connection: local          # Run tasks locally, no SSH
+      ansible_python_interpreter: auto   # Auto-detect Python interpreter

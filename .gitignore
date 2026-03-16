@@ -1,0 +1,41 @@
+# =============================================================================
+# .gitignore — Files that should never be committed
+# =============================================================================
+
+# ── Secrets and credentials ──────────────────────────────────────────────────
+# Environment files containing API keys, client secrets, and passwords
+set-aws-creds.sh
+nerdctl-compose/.env
+nerdctl-compose/products-agent/.env
+nerdctl-compose/products-mcp/.env
+nerdctl-compose/products-web/.env
+terraform/terraform.tfvars
+
+# Vault Enterprise license (contains license key)
+# vault.hclic  ← intentionally tracked (needed for deployment)
+
+# ── Terraform ────────────────────────────────────────────────────────────────
+# Local Terraform state (use remote backend for team sharing)
+terraform/.terraform/
+terraform/terraform.tfstate
+terraform/terraform.tfstate.backup
+terraform/.terraform.lock.hcl
+
+# ── Ansible ──────────────────────────────────────────────────────────────────
+# Retry files from failed playbook runs
+*.retry
+
+# ── macOS ────────────────────────────────────────────────────────────────────
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# ── Editor ───────────────────────────────────────────────────────────────────
+.vscode/settings.json
+.idea/
+*.swp
+*.swo
+
+# ── Runtime artifacts ────────────────────────────────────────────────────────
+# Generated compose archive (created by original Terraform bastion module)
+*.zip

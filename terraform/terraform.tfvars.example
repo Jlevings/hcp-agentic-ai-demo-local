@@ -1,0 +1,72 @@
+# =============================================================================
+# terraform.tfvars.example — Variable Values Template
+# =============================================================================
+# Copy this file to terraform.tfvars and fill in all values.
+#   cp terraform/terraform.tfvars.example terraform/terraform.tfvars
+#
+# terraform.tfvars is gitignored — never commit it.
+# See docs/ENTRA-ID-SETUP.md for how to obtain all Azure values.
+# =============================================================================
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Vault Connection
+# Fill in vault_token after: ansible-playbook ansible/playbooks/02-vault.yml
+# Run: cat ~/.demo/vault/.vault-token
+# ─────────────────────────────────────────────────────────────────────────────
+vault_addr  = "http://127.0.0.1:8200"
+vault_token = ""  # cat ~/.demo/vault/.vault-token
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Microsoft Entra ID — from docs/ENTRA-ID-SETUP.md
+# ─────────────────────────────────────────────────────────────────────────────
+tenant_id = ""  # Azure Portal > Entra ID > Overview > Tenant ID
+
+mcp_client_id   = ""  # products-mcp app registration > Application (client) ID
+agent_client_id = ""  # products-agent app registration > Application (client) ID
+web_client_id   = ""  # products-web app registration > Application (client) ID
+
+agent_client_secret = ""  # products-agent > Certificates & secrets > Value
+web_client_secret   = ""  # products-web > Certificates & secrets > Value
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Entra ID Security Group Object IDs
+# ─────────────────────────────────────────────────────────────────────────────
+readonly_group_object_id  = ""  # db-readonly group > Overview > Object ID
+readwrite_group_object_id = ""  # db-readwrite group > Overview > Object ID
+
+# ─────────────────────────────────────────────────────────────────────────────
+# OAuth Scopes — built from client IDs above (see ENTRA-ID-SETUP.md Step 9)
+# ─────────────────────────────────────────────────────────────────────────────
+web_scopes   = "openid profile email api://YOUR_AGENT_CLIENT_ID/access"
+agent_scopes = "api://YOUR_MCP_CLIENT_ID/access"
+mcp_scopes   = "api://YOUR_MCP_CLIENT_ID/access"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Demo Users
+# ─────────────────────────────────────────────────────────────────────────────
+alice_username = "alice@yourtenant.onmicrosoft.com"
+alice_password = ""
+
+bob_username = "bob@yourtenant.onmicrosoft.com"
+bob_password = ""
+
+# ─────────────────────────────────────────────────────────────────────────────
+# MongoDB
+# Fill in after: ansible-playbook ansible/playbooks/03-mongodb.yml
+# Run: cat ~/.demo/mongodb/password
+# ─────────────────────────────────────────────────────────────────────────────
+mongo_username = "mongoadmin"
+mongo_password = ""  # cat ~/.demo/mongodb/password
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Redirect URI
+# ─────────────────────────────────────────────────────────────────────────────
+redirect_uri = "http://localhost:8501/callback"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# LLM Backend — fill in ONE option below
+# ─────────────────────────────────────────────────────────────────────────────
+bedrock_region                = "us-west-2"
+bedrock_inference_profile_arn = ""  # Fill in if using AWS Bedrock
+
+anthropic_api_key = ""  # Fill in if using Anthropic API directly

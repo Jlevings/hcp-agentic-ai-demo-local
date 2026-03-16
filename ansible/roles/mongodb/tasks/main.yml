@@ -1,0 +1,208 @@
+---
+# =============================================================================
+# roles/mongodb/tasks/main.yml — MongoDB Container Setup
+# =============================================================================
+# This role:
+#   1. Generates a secure random admin password (stored at ~/.demo/mongodb/password)
+#   2. Pulls and starts a MongoDB container via nerdctl
+#   3. Waits for MongoDB to be ready
+#   4. Creates the admin user with root privileges
+#   5. Creates the 'test' database and 'products' collection
+#   6. Seeds the collection with sample product data for the demo
+#
+# MongoDB serves as the application database. Vault's database secrets engine
+# connects to MongoDB using the admin credentials set here, and dynamically
+# creates/revokes short-lived user accounts for the application.
+#
+# After this role runs:
+#   - MongoDB is running at localhost:27017
+#   - Admin credentials are at ~/.demo/mongodb/password
+#   - The 'test.products' collection is seeded with demo data
+# =============================================================================
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Setup
+# ─────────────────────────────────────────────────────────────────────────────
+
+- name: Create MongoDB demo directory
+  ansible.builtin.file:
+    path: "{{ ansible_env.HOME }}/.demo/mongodb"
+    state: directory
+    mode: "0700"
+
+- name: Check if MongoDB password file exists (idempotency)
+  ansible.builtin.stat:
+    path: "{{ ansible_env.HOME }}/.demo/mongodb/password"
+  register: mongo_password_file
+
+- name: Generate secure MongoDB admin password
+  ansible.builtin.set_fact:
+    mongo_admin_password: >-
+      {{ lookup('password', '/dev/null chars=ascii_letters,digits length=32') }}
+  when: not mongo_password_file.stat.exists
+  # Generates a 32-character alphanumeric password. Using /dev/null as the
+  # path tells Ansible's password lookup to generate without saving (we save it).
+
+- name: Load existing MongoDB password
+  ansible.builtin.slurp:
+    src: "{{ ansible_env.HOME }}/.demo/mongodb/password"
+  register: existing_password
+  when: mongo_password_file.stat.exists
+
+- name: Set mongo_admin_password from existing file
+  ansible.builtin.set_fact:
+    mongo_admin_password: "{{ existing_password.content | b64decode | trim }}"
+  when: mongo_password_file.stat.exists
+
+- name: Save MongoDB admin password to file
+  ansible.builtin.copy:
+    dest: "{{ ansible_env.HOME }}/.demo/mongodb/password"
+    content: "{{ mongo_admin_password }}"
+    mode: "0600"
+  when: not mongo_password_file.stat.exists
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Container Management
+# ─────────────────────────────────────────────────────────────────────────────
+
+- name: Pull MongoDB image
+  ansible.builtin.command: nerdctl pull mongo:7.0
+  changed_when: true
+  # Pin to MongoDB 7.0 for compatibility with Vault's MongoDB plugin.
+
+- name: Check if MongoDB container exists
+  ansible.builtin.command: nerdctl inspect mongodb
+  register: mongo_container_check
+  changed_when: false
+  failed_when: false
+
+- name: Remove stopped MongoDB container if present
+  ansible.builtin.command: nerdctl rm mongodb
+  when:
+    - mongo_container_check.rc == 0
+    - "'exited' in mongo_container_check.stdout"
+  changed_when: true
+  failed_when: false
+
+- name: Create MongoDB data directory
+  ansible.builtin.file:
+    path: "{{ ansible_env.HOME }}/.demo/mongodb/data"
+    state: directory
+    mode: "0755"
+
+- name: Start MongoDB container
+  ansible.builtin.command: >
+    nerdctl run -d
+    --name mongodb
+    --restart unless-stopped
+    -p 27017:27017
+    -v {{ ansible_env.HOME }}/.demo/mongodb/data:/data/db
+    mongo:7.0
+    --auth
+  when: mongo_container_check.rc != 0
+  changed_when: true
+  # --auth enables MongoDB authentication mode.
+  # Without an initial admin user, the local exception allows the first user
+  # to be created without credentials (MongoDB 7.0 behavior).
+
+- name: Wait for MongoDB to accept connections
+  ansible.builtin.wait_for:
+    host: 127.0.0.1
+    port: 27017
+    delay: 3
+    timeout: 60
+    state: started
+  # Polls TCP port 27017 until MongoDB is listening.
+
+- name: Wait additional time for MongoDB to fully initialize
+  ansible.builtin.pause:
+    seconds: 5
+  # MongoDB may accept TCP connections slightly before it's ready to process
+  # authentication commands. A short pause prevents race conditions.
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Admin User Creation
+# ─────────────────────────────────────────────────────────────────────────────
+
+- name: Check if admin user already exists
+  ansible.builtin.command: >
+    nerdctl exec mongodb mongosh
+    --quiet
+    --eval "db.getSiblingDB('admin').getUser('mongoadmin')"
+    admin
+  register: admin_user_check
+  changed_when: false
+  failed_when: false
+
+- name: Create MongoDB admin user
+  ansible.builtin.command: >
+    nerdctl exec mongodb mongosh
+    --quiet
+    --eval "
+      db.getSiblingDB('admin').createUser({
+        user: 'mongoadmin',
+        pwd: '{{ mongo_admin_password }}',
+        roles: [ { role: 'root', db: 'admin' } ]
+      });
+    "
+    admin
+  when: admin_user_check.stdout == "null" or admin_user_check.rc != 0
+  changed_when: true
+  # The 'root' role grants the admin user full permissions to create and
+  # drop users on any database — required for Vault's dynamic credential
+  # management (Vault calls createUser/dropUser on demand).
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Database and Collection Setup
+# ─────────────────────────────────────────────────────────────────────────────
+
+- name: Check if products collection exists
+  ansible.builtin.command: >
+    nerdctl exec mongodb mongosh
+    --quiet
+    -u mongoadmin -p "{{ mongo_admin_password }}" --authenticationDatabase admin
+    --eval "db.getSiblingDB('test').products.countDocuments()"
+    test
+  register: products_count
+  changed_when: false
+  failed_when: false
+
+- name: Create test database and seed products collection
+  ansible.builtin.command: >
+    nerdctl exec mongodb mongosh
+    --quiet
+    -u mongoadmin -p "{{ mongo_admin_password }}" --authenticationDatabase admin
+    --eval "
+      db = db.getSiblingDB('test');
+      db.products.insertMany([
+        { name: 'Laptop Pro 15', price: 1299.99, category: 'Electronics', stock: 50 },
+        { name: 'Wireless Mouse', price: 29.99, category: 'Accessories', stock: 200 },
+        { name: 'USB-C Hub 7-port', price: 49.99, category: 'Accessories', stock: 150 },
+        { name: 'Mechanical Keyboard', price: 149.99, category: 'Peripherals', stock: 75 },
+        { name: 'Monitor 27\" 4K', price: 599.99, category: 'Displays', stock: 30 },
+        { name: 'Webcam HD 1080p', price: 79.99, category: 'Accessories', stock: 100 },
+        { name: 'Standing Desk Mat', price: 39.99, category: 'Office', stock: 180 },
+        { name: 'Cable Management Kit', price: 24.99, category: 'Office', stock: 250 }
+      ]);
+      print('Seeded ' + db.products.countDocuments() + ' products.');
+    "
+    test
+  when: products_count.stdout == "0" or products_count.rc != 0
+  changed_when: true
+
+- name: Summary
+  ansible.builtin.debug:
+    msg: |
+      ============================================================
+      MongoDB is running and seeded.
+        Host:     localhost:27017
+        Admin:    mongoadmin / {{ mongo_admin_password }}
+        Password: ~/.demo/mongodb/password
+
+      IMPORTANT: Copy this password into terraform.tfvars:
+        mongo_password = "{{ mongo_admin_password }}"
+
+      Next step:
+        cd terraform && terraform init && terraform apply
+        Then: ansible-playbook ansible/playbooks/04-app-stack.yml
+      ============================================================
