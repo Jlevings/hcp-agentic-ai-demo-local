@@ -371,13 +371,16 @@ elif page == "Entity Explorer":
         st.error("VAULT_TOKEN is not set. Check vault-observer/.env.")
         st.stop()
 
-    # List all entity IDs in the namespace (requires HTTP LIST method)
-    resp = vault_list("identity/entity")
+    # List entities by ID — the correct Vault API path is identity/entity/id
+    # (not identity/entity). The /id subpath also returns rich key_info with
+    # alias names upfront, avoiding extra per-entity lookups.
+    resp = vault_list("identity/entity/id")
 
     if resp is None:
         st.stop()
 
     entity_ids = resp.get("data", {}).get("keys", [])
+    key_info   = resp.get("data", {}).get("key_info", {})
 
     if not entity_ids:
         st.info(
@@ -388,18 +391,26 @@ elif page == "Entity Explorer":
         st.success(f"Found **{len(entity_ids)}** entity/entities in namespace `{VAULT_NAMESPACE}`.")
 
         for eid in entity_ids:
+            # Use the alias name from key_info as the display title when available
+            summary = key_info.get(eid, {})
+            aliases_summary = summary.get("aliases", [])
+            display_name = (
+                aliases_summary[0].get("name", summary.get("name", eid))
+                if aliases_summary else summary.get("name", eid)
+            )
+
+            # Fetch full entity details for group_ids and metadata
             entity = vault_get(f"identity/entity/id/{eid}")
             if entity is None:
                 continue
             data = entity.get("data", {})
-            name = data.get("name", eid)
 
-            with st.expander(f"🧑 {name}", expanded=True):
+            with st.expander(f"🧑 {display_name}", expanded=True):
                 col1, col2 = st.columns(2)
 
                 with col1:
                     st.markdown("**Entity ID**")
-                    st.code(data.get("id", "—"))
+                    st.code(data.get("id", eid))
 
                     st.markdown("**Policies (direct)**")
                     direct_policies = data.get("policies", [])
@@ -417,7 +428,12 @@ elif page == "Entity Explorer":
                     st.markdown("**Aliases (auth method links)**")
                     aliases = data.get("aliases", [])
                     for alias in aliases:
-                        st.write(f"- `{alias.get('name', '—')}` via `{alias.get('mount_path', '—')}`")
+                        jwt_name = alias.get("name", "—")
+                        mount   = alias.get("mount_path", "—")
+                        # Show claim metadata (name, aud) captured at login
+                        alias_meta = alias.get("metadata", {}) or {}
+                        display_alias_name = alias_meta.get("name", jwt_name)
+                        st.write(f"- **{display_alias_name}** (`{jwt_name}`) via `{mount}`")
 
                     st.markdown("**Group Memberships**")
                     groups = data.get("group_ids", [])
@@ -431,8 +447,8 @@ elif page == "Entity Explorer":
                                     f"→ policies: {gdata.get('policies', [])}"
                                 )
                     else:
-                        st.write("No direct group memberships found. "
-                                 "External groups are resolved at login time from JWT claims.")
+                        st.write("No group memberships. External groups are resolved "
+                                 "at login time from the JWT `groups` claim.")
 
     st.markdown("---")
     st.markdown(
