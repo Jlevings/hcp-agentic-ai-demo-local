@@ -23,3 +23,14 @@ provider "vault" {
   # within the demo child namespace.
   namespace = "admin"
 }
+
+# Root-level Vault provider (no namespace).
+# Required for resources that are not namespace-scoped in Vault Enterprise:
+#   - vault_audit (audit devices are global, not per-namespace)
+# Usage: add `provider = vault.root` to any such resource.
+provider "vault" {
+  alias   = "root"
+  address = var.vault_addr
+  token   = var.vault_token
+  # No namespace — operates at the root of Vault
+}

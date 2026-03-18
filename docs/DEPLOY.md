@@ -182,6 +182,63 @@ Sign in as Alice (read-only) or Bob (read-write). See [TEST.md](./TEST.md) for t
 
 ---
 
+### Step 9: Open the Operator Dashboard (Optional)
+
+```
+http://localhost:8502
+```
+
+The **Vault Observer** is a read-only operator dashboard that reads the Vault audit log
+and calls the Vault Identity API. Use it during the demo to show audiences what Vault
+sees at each step of the authentication flow.
+
+**Pages:**
+| Page | What It Shows |
+|------|--------------|
+| Auth Events | Every JWT login: user, policies applied, entity ID, token TTL |
+| Credential Issuance | Every dynamic DB credential: user, role, generated username, lease duration |
+| Entity Explorer | Vault entities for Alice and Bob: aliases, group memberships, policies |
+| Token Lifecycle | Token create/renew/revoke timeline |
+| SIEM Context | What Vault logs provide vs what a SIEM adds (great for technical audiences) |
+
+**Raw log access (CLI):**
+```bash
+# View all events pretty-printed
+cat ~/.demo/vault/logs/audit.log | python3 -c "
+import sys, json
+for line in sys.stdin:
+    line = line.strip()
+    if line:
+        try: print(json.dumps(json.loads(line), indent=2)); print('---')
+        except: print(line)
+" | less
+
+# Live tail during the demo
+tail -f ~/.demo/vault/logs/audit.log | python3 -c "
+import sys, json
+for line in sys.stdin:
+    line = line.strip()
+    if line:
+        try: print(json.dumps(json.loads(line), indent=2)); print('---')
+        except: print(line)
+"
+
+# Filter to auth events only
+cat ~/.demo/vault/logs/audit.log | python3 -c "
+import sys, json
+for line in sys.stdin:
+    line = line.strip()
+    if line:
+        try:
+            e = json.loads(line)
+            if 'auth/jwt/login' in e.get('request', {}).get('path', ''):
+                print(json.dumps(e, indent=2)); print('---')
+        except: pass
+"
+```
+
+---
+
 ## AWS Bedrock Setup (if using Option A)
 
 The `products-agent` container needs AWS credentials to call Bedrock. Set these

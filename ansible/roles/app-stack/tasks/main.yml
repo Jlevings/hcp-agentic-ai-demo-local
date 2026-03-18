@@ -29,8 +29,18 @@
     - "{{ compose_dir }}/products-agent"
     - "{{ compose_dir }}/products-mcp"
     - "{{ compose_dir }}/products-web"
+    - "{{ compose_dir }}/vault-observer"
   vars:
     compose_dir: "{{ playbook_dir }}/../../nerdctl-compose"
+
+# Vault audit logs are written by vault-enterprise to ~/.demo/vault/logs/audit.log
+# This directory must exist before vault-enterprise starts (or before terraform apply
+# enables the audit device). The vault role creates it, but we ensure it here too.
+- name: Ensure Vault audit logs directory exists
+  ansible.builtin.file:
+    path: "{{ ansible_env.HOME }}/.demo/vault/logs"
+    state: directory
+    mode: "0755"
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Generate .env files for each service
@@ -55,6 +65,14 @@
   ansible.builtin.template:
     src: products-web.env.j2
     dest: "{{ playbook_dir }}/../../nerdctl-compose/products-web/.env"
+    mode: "0600"
+
+# vault-observer needs the root Vault token and full namespace path so it can
+# call the Vault Identity API to list entities and groups.
+- name: Generate vault-observer .env file
+  ansible.builtin.template:
+    src: vault-observer.env.j2
+    dest: "{{ playbook_dir }}/../../nerdctl-compose/vault-observer/.env"
     mode: "0600"
 
 - name: Generate root .env file (tag and platform)
@@ -136,8 +154,10 @@
         products-web:   http://localhost:8501  ({{ 'UP' if web_health.status in [200,302] else 'CHECK LOGS' }})
         products-agent: http://localhost:8001  ({{ 'UP' if agent_health.status in [200,404,422] else 'CHECK LOGS' }})
         products-mcp:   http://localhost:8000  ({{ 'UP' if mcp_health.status in [200,404,422] else 'CHECK LOGS' }})
+        vault-observer: http://localhost:8502  (Operator audit dashboard)
 
-      Open the demo: http://localhost:8501
+      Open the demo:      http://localhost:8501
+      Operator dashboard: http://localhost:8502
       Sign in as Alice (read-only) or Bob (read-write).
 
       View logs: nerdctl compose -f nerdctl-compose/docker-compose.yml logs -f

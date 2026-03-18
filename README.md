@@ -187,6 +187,7 @@ This automates the full stack:
 | Service | URL |
 |---------|-----|
 | **Demo App** | http://localhost:8501 |
+| **Operator Dashboard** | http://localhost:8502 |
 | Vault UI | http://localhost:8200/ui |
 | Agent API | http://localhost:8001 |
 | MCP Server | http://localhost:8000 |
@@ -251,7 +252,35 @@ Add a new product named "Table Model Y" with price $89.99
 
 ---
 
-#### 3. Show Vault UI (optional but powerful)
+#### 3. Show the Operator Dashboard (high-impact for technical audiences)
+
+Open [http://localhost:8502](http://localhost:8502) — the Vault Observer dashboard.
+
+- **Auth Events** — shows Alice's JWT login, the `readonly` policy Vault applied, and her entity ID
+- **Credential Issuance** — shows each dynamically generated MongoDB username and its 5-minute TTL
+- **Entity Explorer** — shows Alice and Bob as distinct Vault entities with their group memberships
+- **Token Lifecycle** — shows token creation and expiry for each session
+- **SIEM Context** — explains what Vault logs provide vs what a SIEM adds
+
+**Talk Track:**
+> "This is what an operator sees in real time. Every login, every credential issuance, every policy decision — all structured, identity-correlated, and readable without any additional tooling. In production you'd pipe this JSON into Splunk or Datadog, but even without a SIEM, the full audit trail is right here."
+
+**Raw log access (CLI):**
+```bash
+# Live tail during the demo
+tail -f ~/.demo/vault/logs/audit.log | python3 -c "
+import sys, json
+for line in sys.stdin:
+    line = line.strip()
+    if line:
+        try: print(json.dumps(json.loads(line), indent=2)); print('---')
+        except: print(line)
+"
+```
+
+---
+
+#### 4. Show Vault UI (optional but powerful)
 
 Open [http://localhost:8200/ui](http://localhost:8200/ui) → navigate to the `admin/agentic-iam-*` namespace:
 

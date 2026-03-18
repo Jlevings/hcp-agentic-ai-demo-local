@@ -183,3 +183,38 @@ resource "vault_identity_group_alias" "readwrite" {
   mount_accessor = vault_jwt_auth_backend.entra.accessor
   canonical_id   = vault_identity_group.readwrite.id
 }
+
+# ── Audit Logging ─────────────────────────────────────────────────────────────
+# Enable Vault's file audit device so every request and response is recorded
+# as newline-delimited JSON at /vault/logs/audit.log inside the container.
+# The host directory ~/.demo/vault/logs is mounted at /vault/logs in the
+# vault-enterprise container (see nerdctl-compose/docker-compose.yml), making
+# the log readable from the host and from the vault-observer container.
+#
+# Audit devices are root-level resources — they are NOT namespace-scoped.
+# This means the provider must authenticate at root, which it does via
+# vault_token in providers.tf (no namespace attribute here).
+#
+# Each log entry contains:
+#   time           — ISO8601 timestamp of the event
+#   type           — "request" or "response"
+#   auth           — who authenticated (display_name, policies, entity_id, token_ttl)
+#   request.path   — which Vault API path was called (e.g. auth/jwt/login)
+#   response.data  — returned data (e.g. DB username, lease_duration for creds)
+#
+# To view logs from the host:
+#   cat ~/.demo/vault/logs/audit.log | python3 -m json.tool
+# To tail live during a demo:
+#   tail -f ~/.demo/vault/logs/audit.log
+resource "vault_audit" "file" {
+  # Audit devices are root-level in Vault Enterprise — they are NOT namespace-scoped.
+  # Use the root provider alias (no namespace) so Vault accepts the request.
+  provider = vault.root
+
+  type = "file"
+
+  options = {
+    # Path inside the vault-enterprise container — maps to ~/.demo/vault/logs on host
+    file_path = "/vault/logs/audit.log"
+  }
+}

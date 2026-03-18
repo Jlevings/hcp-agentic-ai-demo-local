@@ -55,6 +55,7 @@ services:
     volumes:
       - /Users/joelevingston/.demo/vault/data:/vault/data
       - /Users/joelevingston/.demo/vault/config:/vault/config
+      - /Users/joelevingston/.demo/vault/logs:/vault/logs    # Audit log output (read by vault-observer)
     environment:
       - VAULT_LICENSE_PATH=/vault/config/vault.hclic
       - VAULT_ADDR=http://127.0.0.1:8200
@@ -164,6 +165,44 @@ services:
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8501"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  # ── vault-observer ────────────────────────────────────────────────────────────
+  # Operator dashboard — a Streamlit app that reads Vault's file audit log and
+  # calls the Vault API to show a human-readable trace of every authentication
+  # event: JWT login → policy mapping → dynamic DB credential issuance.
+  #
+  # Intended audience: SEs and operators demonstrating "what does Vault see?"
+  # and "do we need a SIEM?" during the demo.
+  #
+  # Open: http://localhost:8502
+  #
+  # The audit log at ~/.demo/vault/logs/audit.log is mounted read-only here;
+  # the vault-enterprise service mounts it read-write so Vault can append to it.
+  vault-observer:
+    build:
+      context: ./vault-observer
+      dockerfile: Dockerfile
+    image: vault-observer-local:latest
+    platform: ${platform:-linux/arm64}
+    container_name: vault-observer
+    ports:
+      - "8502:8502"    # Operator dashboard
+    volumes:
+      # Audit log from Vault — read-only; vault-enterprise writes, we only read
+      - /Users/joelevingston/.demo/vault/logs:/vault/logs:ro
+      # Contains: VAULT_ADDR, VAULT_TOKEN (root), VAULT_NAMESPACE
+      - ./vault-observer/.env:/app/.env:ro
+    networks:
+      - demo-net
+    depends_on:
+      - vault-enterprise
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8502/_stcore/health"]
       interval: 15s
       timeout: 5s
       retries: 5
