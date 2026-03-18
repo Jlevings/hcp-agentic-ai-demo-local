@@ -152,17 +152,49 @@ def vault_get(path, root_level=False):
     Make a GET request to the Vault API.
 
     Args:
-        path:       The Vault API path (e.g., "identity/entity?list=true")
-        root_level: If True, omit the X-Vault-Namespace header (for sys/ paths
-                    that are root-level and not namespace-scoped).
+        path:       The Vault API path (e.g., "identity/entity/id/<id>")
+        root_level: If True, omit the X-Vault-Namespace header.
 
-    Returns the parsed JSON response body, or raises on HTTP error.
+    Returns the parsed JSON response body, or None on error.
     """
     headers = {"X-Vault-Token": VAULT_TOKEN}
     if not root_level and VAULT_NAMESPACE:
         headers["X-Vault-Namespace"] = VAULT_NAMESPACE
     try:
         r = requests.get(f"{VAULT_ADDR}/v1/{path}", headers=headers, timeout=5)
+        r.raise_for_status()
+        return r.json()
+    except requests.exceptions.ConnectionError:
+        st.error(f"Cannot reach Vault at {VAULT_ADDR}. Is vault-enterprise running?")
+        return None
+    except requests.exceptions.HTTPError as e:
+        st.error(f"Vault API error: {e}")
+        return None
+
+
+def vault_list(path, root_level=False):
+    """
+    Make a LIST request to the Vault API.
+
+    Vault's list operation uses the HTTP LIST method (not GET ?list=true).
+    This is required for identity/entity, identity/group, etc.
+
+    Args:
+        path:       The Vault API path (e.g., "identity/entity")
+        root_level: If True, omit the X-Vault-Namespace header.
+
+    Returns the parsed JSON response body, or None on error.
+    """
+    headers = {"X-Vault-Token": VAULT_TOKEN}
+    if not root_level and VAULT_NAMESPACE:
+        headers["X-Vault-Namespace"] = VAULT_NAMESPACE
+    try:
+        r = requests.request(
+            "LIST", f"{VAULT_ADDR}/v1/{path}", headers=headers, timeout=5
+        )
+        if r.status_code == 404:
+            # Vault returns 404 when there are no entries — treat as empty list
+            return {"data": {"keys": []}}
         r.raise_for_status()
         return r.json()
     except requests.exceptions.ConnectionError:
@@ -339,8 +371,8 @@ elif page == "Entity Explorer":
         st.error("VAULT_TOKEN is not set. Check vault-observer/.env.")
         st.stop()
 
-    # List all entity IDs in the namespace
-    resp = vault_get("identity/entity?list=true")
+    # List all entity IDs in the namespace (requires HTTP LIST method)
+    resp = vault_list("identity/entity")
 
     if resp is None:
         st.stop()
