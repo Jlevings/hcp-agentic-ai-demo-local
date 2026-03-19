@@ -184,13 +184,26 @@ This automates the full stack:
 
 ### Step 4: Open the Demo
 
-| Service | URL |
-|---------|-----|
-| **Demo App** | http://localhost:8501 |
-| **Operator Dashboard** | http://localhost:8502 |
-| Vault UI | http://localhost:8200/ui |
-| Agent API | http://localhost:8001 |
-| MCP Server | http://localhost:8000 |
+| Service | Friendly URL | Fallback |
+|---------|-------------|---------|
+| **Demo App** | http://localhost:8501 ¹ | — |
+| **Operator Dashboard** | http://vault.observer:8502 | http://localhost:8502 |
+| Vault UI | http://vault.demo:8200/ui | http://localhost:8200/ui |
+| Agent API | http://products.agent:8001 | http://localhost:8001 |
+| MCP Server | http://products.mcp:8000 | http://localhost:8000 |
+
+> ¹ The demo app must use `localhost:8501` because Azure's redirect URI is registered as `http://localhost:8501/callback`. To use `products.web:8501` instead, add `http://products.web:8501/callback` as an additional redirect URI in the Azure portal and update `REDIRECT_URI` in `nerdctl-compose/.env`.
+>
+> **Add friendly names to your Mac** (one-time setup):
+> ```bash
+> sudo tee -a /etc/hosts << 'EOF'
+> 127.0.0.1    vault.demo
+> 127.0.0.1    vault.observer
+> 127.0.0.1    products.agent
+> 127.0.0.1    products.mcp
+> 127.0.0.1    products.web
+> EOF
+> ```
 
 ---
 

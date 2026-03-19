@@ -174,18 +174,45 @@ All services should show as healthy. If not, see Troubleshooting below.
 
 ### Step 8: Open the Demo
 
-```
-http://localhost:8501
-```
+| Service | URL |
+|---------|-----|
+| **Demo App** | http://localhost:8501 (use `localhost` — required for Azure OAuth redirect) |
+| **Operator Dashboard** | http://vault.observer:8502 |
+| Vault UI | http://vault.demo:8200/ui |
+| Agent API | http://products.agent:8001 |
+| MCP Server | http://products.mcp:8000 |
+
+> **Friendly hostnames require a one-time `/etc/hosts` entry** (see below).
 
 Sign in as Alice (read-only) or Bob (read-write). See [TEST.md](./TEST.md) for the full demo walkthrough.
+
+#### Add Friendly Hostnames (one-time)
+
+```bash
+sudo tee -a /etc/hosts << 'EOF'
+
+# ── Vault Agentic IAM Demo (local) ──────────────────────────────────────────
+127.0.0.1    vault.demo        # Vault Enterprise UI      :8200
+127.0.0.1    vault.observer    # Vault Observer dashboard :8502
+127.0.0.1    products.agent    # Agent API                :8001
+127.0.0.1    products.mcp      # MCP Server               :8000
+127.0.0.1    products.web      # Demo Web App             :8501
+# ────────────────────────────────────────────────────────────────────────────
+EOF
+```
+
+> **Note on `products.web`:** The Azure redirect URI is registered as
+> `http://localhost:8501/callback`. Using `http://products.web:8501` for the
+> demo app will resolve correctly, but OAuth login will fail unless you also
+> add `http://products.web:8501/callback` as a redirect URI in the Azure
+> portal and update `REDIRECT_URI` in `nerdctl-compose/.env`.
 
 ---
 
 ### Step 9: Open the Operator Dashboard (Optional)
 
 ```
-http://localhost:8502
+http://vault.observer:8502
 ```
 
 The **Vault Observer** is a read-only operator dashboard that reads the Vault audit log

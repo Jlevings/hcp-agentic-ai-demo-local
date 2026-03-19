@@ -64,7 +64,7 @@ page = st.sidebar.radio(
 )
 st.sidebar.markdown("---")
 st.sidebar.markdown(
-    "**Vault UI:** [localhost:8200](http://localhost:8200/ui)  \n"
+    "**Vault UI:** [vault.demo:8200](http://vault.demo:8200/ui)  \n"
     "**Demo App:** [localhost:8501](http://localhost:8501)"
 )
 
